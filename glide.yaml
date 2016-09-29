@@ -1,0 +1,4 @@
+package: github.com/qgweb/rdb
+import:
+- package: github.com/tidwall/buntdb
+- package: github.com/tidwall/redcon
