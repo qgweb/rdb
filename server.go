@@ -11,11 +11,14 @@ import (
 	"fmt"
 	"time"
 	"github.com/qgweb/glib/convert"
+	"os"
+	"bufio"
 )
 
 var (
 	addr = flag.String("addr", ":6380", "地址,xxxx:xxxx")
 	dbpath = flag.String("path", "", "存储路径，默认内存")
+	export = flag.String("o", "", "导出路径")
 	keycols int
 )
 
@@ -23,6 +26,36 @@ func init() {
 	flag.Parse()
 	if *dbpath == "" {
 		*dbpath = ":memory:"
+	}
+
+	exportData()
+}
+
+func exportData() {
+	//导出模式
+	if *export != "" && *dbpath != ":memory:" {
+		db, err := buntdb.Open(*dbpath)
+		if err != nil {
+			log.Fatal("ERR-导出失败:", err)
+		}
+		f, err := os.Create(*export)
+		if err != nil {
+			log.Fatal("ERR-导出失败:", err)
+		}
+		bw := bufio.NewWriter(f)
+		if err = db.View(func(tx *buntdb.Tx) error {
+			return tx.Ascend("", func(k, v string) bool {
+				bw.WriteString(k + "\t" + v + "\n")
+				return true
+			})
+		}); err != nil {
+			log.Fatal("ERR-导出失败:", err)
+		}
+		bw.Flush()
+		log.Println("SUCCESS")
+		f.Close()
+		db.Close()
+		os.Exit(0)
 	}
 }
 
