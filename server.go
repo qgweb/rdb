@@ -19,6 +19,7 @@ var (
 	addr = flag.String("addr", ":6380", "地址,xxxx:xxxx")
 	dbpath = flag.String("path", "", "存储路径，默认内存")
 	export = flag.String("o", "", "导出路径")
+	isappend = flag.Bool("append", false, "是否开启追加模式")
 	keycols int
 )
 
@@ -191,7 +192,13 @@ func CmdSet(conn redcon.Conn, db *buntdb.DB, cmd redcon.Command) {
 		} else {
 			option = nil
 		}
-		_, _, err := tx.Set(string(cmd.Args[1]), string(cmd.Args[2]), option)
+		nval := string(cmd.Args[2])
+		if (*isappend) {
+			ov, _ := tx.Get(string(cmd.Args[1]))
+			nval += ov
+		}
+
+		_, _, err := tx.Set(string(cmd.Args[1]), nval, option)
 		if err != nil {
 			conn.WriteString("NO")
 			return nil
