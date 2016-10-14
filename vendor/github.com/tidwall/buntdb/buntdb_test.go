@@ -184,6 +184,167 @@ func TestMutatingIterator(t *testing.T) {
 
 	}
 }
+func TestIndexTransaction(t *testing.T) {
+	db := testOpen(t)
+	defer testClose(db)
+	var errFine = errors.New("this is fine")
+	ascend := func(tx *Tx, index string) ([]string, error) {
+		var vals []string
+		if err := tx.Ascend(index, func(key, val string) bool {
+			vals = append(vals, key, val)
+			return true
+		}); err != nil {
+			return nil, err
+		}
+		return vals, nil
+	}
+	ascendEqual := func(tx *Tx, index string, vals []string) error {
+		vals2, err := ascend(tx, index)
+		if err != nil {
+			return err
+		}
+		if len(vals) != len(vals2) {
+			return errors.New("invalid size match")
+		}
+		for i := 0; i < len(vals); i++ {
+			if vals[i] != vals2[i] {
+				return errors.New("invalid order")
+			}
+		}
+		return nil
+	}
+	// test creating an index and adding items
+	if err := db.Update(func(tx *Tx) error {
+		tx.Set("1", "3", nil)
+		tx.Set("2", "2", nil)
+		tx.Set("3", "1", nil)
+		if err := tx.CreateIndex("idx1", "*", IndexInt); err != nil {
+			return err
+		}
+		if err := ascendEqual(tx, "idx1", []string{"3", "1", "2", "2", "1", "3"}); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// test to see if the items persisted from previous transaction
+	// test add item.
+	// test force rollback.
+	if err := db.Update(func(tx *Tx) error {
+		if err := ascendEqual(tx, "idx1", []string{"3", "1", "2", "2", "1", "3"}); err != nil {
+			return err
+		}
+		tx.Set("4", "0", nil)
+		if err := ascendEqual(tx, "idx1", []string{"4", "0", "3", "1", "2", "2", "1", "3"}); err != nil {
+			return err
+		}
+		return errFine
+	}); err != errFine {
+		t.Fatalf("expected '%v', got '%v'", errFine, err)
+	}
+
+	// test to see if the rollback happened
+	if err := db.View(func(tx *Tx) error {
+		if err := ascendEqual(tx, "idx1", []string{"3", "1", "2", "2", "1", "3"}); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("expected '%v', got '%v'", nil, err)
+	}
+
+	// del item, drop index, rollback
+	if err := db.Update(func(tx *Tx) error {
+		if err := tx.DropIndex("idx1"); err != nil {
+			return err
+		}
+		return errFine
+	}); err != errFine {
+		t.Fatalf("expected '%v', got '%v'", errFine, err)
+	}
+
+	// test to see if the rollback happened
+	if err := db.View(func(tx *Tx) error {
+		if err := ascendEqual(tx, "idx1", []string{"3", "1", "2", "2", "1", "3"}); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("expected '%v', got '%v'", nil, err)
+	}
+
+	various := func(reterr error) error {
+		// del item 3, add index 2, add item 4, test index 1 and 2.
+		// flushdb, test index 1 and 2.
+		// add item 1 and 2, add index 2 and 3, test index 2 and 3
+		return db.Update(func(tx *Tx) error {
+			tx.Delete("3")
+			tx.CreateIndex("idx2", "*", IndexInt)
+			tx.Set("4", "0", nil)
+			if err := ascendEqual(tx, "idx1", []string{"4", "0", "2", "2", "1", "3"}); err != nil {
+				return fmt.Errorf("err: %v", err)
+			}
+			if err := ascendEqual(tx, "idx2", []string{"4", "0", "2", "2", "1", "3"}); err != nil {
+				return fmt.Errorf("err: %v", err)
+			}
+			tx.DeleteAll()
+			if err := ascendEqual(tx, "idx1", []string{}); err != nil {
+				return fmt.Errorf("err: %v", err)
+			}
+			if err := ascendEqual(tx, "idx2", []string{}); err != nil {
+				return fmt.Errorf("err: %v", err)
+			}
+			tx.Set("1", "3", nil)
+			tx.Set("2", "2", nil)
+			tx.CreateIndex("idx1", "*", IndexInt)
+			tx.CreateIndex("idx2", "*", IndexInt)
+			if err := ascendEqual(tx, "idx1", []string{"2", "2", "1", "3"}); err != nil {
+				return fmt.Errorf("err: %v", err)
+			}
+			if err := ascendEqual(tx, "idx2", []string{"2", "2", "1", "3"}); err != nil {
+				return fmt.Errorf("err: %v", err)
+			}
+			return reterr
+		})
+	}
+	// various rollback
+	if err := various(errFine); err != errFine {
+		t.Fatalf("expected '%v', got '%v'", errFine, err)
+	}
+	// test to see if the rollback happened
+	if err := db.View(func(tx *Tx) error {
+		if err := ascendEqual(tx, "idx1", []string{"3", "1", "2", "2", "1", "3"}); err != nil {
+			return fmt.Errorf("err: %v", err)
+		}
+		if err := ascendEqual(tx, "idx2", []string{"3", "1", "2", "2", "1", "3"}); err != ErrNotFound {
+			return fmt.Errorf("err: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("expected '%v', got '%v'", nil, err)
+	}
+
+	// various commit
+	if err := various(nil); err != nil {
+		t.Fatalf("expected '%v', got '%v'", nil, err)
+	}
+
+	// test to see if the commit happened
+	if err := db.View(func(tx *Tx) error {
+		if err := ascendEqual(tx, "idx1", []string{"2", "2", "1", "3"}); err != nil {
+			return fmt.Errorf("err: %v", err)
+		}
+		if err := ascendEqual(tx, "idx2", []string{"2", "2", "1", "3"}); err != nil {
+			return fmt.Errorf("err: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("expected '%v', got '%v'", nil, err)
+	}
+}
+
 func TestDeleteAll(t *testing.T) {
 	db := testOpen(t)
 	defer testClose(db)
@@ -432,7 +593,7 @@ func TestVariousTx(t *testing.T) {
 	if _, err := db.file.Seek(0, 2); err != nil {
 		t.Fatal(err)
 	}
-	db.buf = &bytes.Buffer{}
+	db.buf = nil
 	if err := db.CreateIndex("blank", "*", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -662,7 +823,7 @@ func TestVariousTx(t *testing.T) {
 	}
 }
 
-func ExampleDescKeys() {
+func Example_descKeys() {
 	db, _ := Open(":memory:")
 	db.CreateIndex("name", "*", IndexString)
 	db.Update(func(tx *Tx) error {
@@ -1078,7 +1239,7 @@ func TestIndexCompare(t *testing.T) {
 	if Rect(IndexRect("[1 2 3 4]")) != "[1 2 3 4]" {
 		t.Fatalf("expected '%v', got '%v'", "[1 2 3 4]", Rect(IndexRect("[1 2 3 4]")))
 	}
-	if Rect(nil, nil) != "" {
+	if Rect(nil, nil) != "[]" {
 		t.Fatalf("expected '%v', got '%v'", "", Rect(nil, nil))
 	}
 	if Point(1, 2, 3) != "[1 2 3]" {
@@ -1619,9 +1780,9 @@ func TestRectStrings(t *testing.T) {
 	test(t, Rect(IndexRect(Rect(IndexRect("[1 2],[2 2],[3]")))) == "[1 2],[2 2]", true)
 	test(t, Rect(IndexRect(Rect(IndexRect("[1 2]")))) == "[1 2]", true)
 	test(t, Rect(IndexRect(Rect(IndexRect("[1.5 2 4.5 5.6]")))) == "[1.5 2 4.5 5.6]", true)
-	test(t, Rect(IndexRect(Rect(IndexRect("[1.5 2 4.5 5.6 -1],[]")))) == "[1.5 2 4.5 5.6 -1],[]", true)
+	test(t, Rect(IndexRect(Rect(IndexRect("[1.5 2 4.5 5.6 -1],[]")))) == "[1.5 2 4.5 5.6 -1]", true)
 	test(t, Rect(IndexRect(Rect(IndexRect("[]")))) == "[]", true)
-	test(t, Rect(IndexRect(Rect(IndexRect("")))) == "", true)
+	test(t, Rect(IndexRect(Rect(IndexRect("")))) == "[]", true)
 	if err := testRectStringer(nil, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1640,7 +1801,7 @@ func TestRectStrings(t *testing.T) {
 	if err := testRectStringer([]float64{1, 2, 3, 4}, []float64{5, 6, 7, 8}); err != nil {
 		t.Fatal(err)
 	}
-	if err := testRectStringer([]float64{1, 2, 3, 4, 5}, []float64{6, 7, 8, 9, 0}); err != nil {
+	if err := testRectStringer([]float64{1, 2, 3, 4, 5}, []float64{6, 7, 8, 9, 10}); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -11,12 +11,12 @@ import (
 )
 
 var (
-	errUnbalancedQuotes = &errProtocol{"unbalanced quotes in request"}
-	errInvalidBulkLength = &errProtocol{"invalid bulk length"}
+	errUnbalancedQuotes       = &errProtocol{"unbalanced quotes in request"}
+	errInvalidBulkLength      = &errProtocol{"invalid bulk length"}
 	errInvalidMultiBulkLength = &errProtocol{"invalid multibulk length"}
-	errDetached = errors.New("detached")
-	errIncompleteCommand = errors.New("incomplete command")
-	errTooMuchData = errors.New("too much data")
+	errDetached               = errors.New("detached")
+	errIncompleteCommand      = errors.New("incomplete command")
+	errTooMuchData            = errors.New("too much data")
 )
 
 type errProtocol struct {
@@ -43,6 +43,8 @@ type Conn interface {
 	WriteBulkString(bulk string)
 	// WriteInt writes an integer to the client.
 	WriteInt(num int)
+	// WriteInt64 writes a 64-but signed integer to the client.
+	WriteInt64(num int64)
 	// WriteArray writes an array header. You must then write addtional
 	// sub-responses to the client to complete the response.
 	// For example to write two strings:
@@ -90,9 +92,9 @@ type Conn interface {
 
 // NewServer returns a new Redcon server.
 func NewServer(addr string,
-handler func(conn Conn, cmd Command),
-accept func(conn Conn) bool,
-closed func(conn Conn, err error),
+	handler func(conn Conn, cmd Command),
+	accept func(conn Conn) bool,
+	closed func(conn Conn, err error),
 ) *Server {
 	if handler == nil {
 		panic("handler is nil")
@@ -126,9 +128,9 @@ func (s *Server) ListenAndServe() error {
 
 // ListenAndServe creates a new server and binds to addr.
 func ListenAndServe(addr string,
-handler func(conn Conn, cmd Command),
-accept func(conn Conn) bool,
-closed func(conn Conn, err error),
+	handler func(conn Conn, cmd Command),
+	accept func(conn Conn) bool,
+	closed func(conn Conn, err error),
 ) error {
 	return NewServer(addr, handler, accept, closed).ListenAndServe()
 }
@@ -265,40 +267,19 @@ func (c *conn) Close() error {
 	c.closed = true
 	return c.conn.Close()
 }
-func (c *conn) Context() interface{} {
-	return c.ctx
-}
-func (c *conn) SetContext(v interface{}) {
-	c.ctx = v
-}
-func (c *conn) SetReadBuffer(n int) {}
-func (c *conn) WriteString(str string) {
-	c.wr.WriteString(str)
-}
-func (c *conn) WriteBulk(bulk []byte) {
-	c.wr.WriteBulk(bulk)
-}
-func (c *conn) WriteBulkString(bulk string) {
-	c.wr.WriteBulkString(bulk)
-}
-func (c *conn) WriteInt(num int) {
-	c.wr.WriteInt(num)
-}
-func (c *conn) WriteError(msg string) {
-	c.wr.WriteError(msg)
-}
-func (c *conn) WriteArray(count int) {
-	c.wr.WriteArray(count)
-}
-func (c *conn) WriteNull() {
-	c.wr.WriteNull()
-}
-func (c *conn) WriteRaw(data []byte) {
-	c.wr.WriteRaw(data)
-}
-func (c *conn) RemoteAddr() string {
-	return c.addr
-}
+func (c *conn) Context() interface{}        { return c.ctx }
+func (c *conn) SetContext(v interface{})    { c.ctx = v }
+func (c *conn) SetReadBuffer(n int)         {}
+func (c *conn) WriteString(str string)      { c.wr.WriteString(str) }
+func (c *conn) WriteBulk(bulk []byte)       { c.wr.WriteBulk(bulk) }
+func (c *conn) WriteBulkString(bulk string) { c.wr.WriteBulkString(bulk) }
+func (c *conn) WriteInt(num int)            { c.wr.WriteInt(num) }
+func (c *conn) WriteInt64(num int64)        { c.wr.WriteInt64(num) }
+func (c *conn) WriteError(msg string)       { c.wr.WriteError(msg) }
+func (c *conn) WriteArray(count int)        { c.wr.WriteArray(count) }
+func (c *conn) WriteNull()                  { c.wr.WriteNull() }
+func (c *conn) WriteRaw(data []byte)        { c.wr.WriteRaw(data) }
+func (c *conn) RemoteAddr() string          { return c.addr }
 func (c *conn) ReadPipeline() []Command {
 	cmds := c.cmds
 	c.cmds = nil
@@ -306,6 +287,14 @@ func (c *conn) ReadPipeline() []Command {
 }
 func (c *conn) PeekPipeline() []Command {
 	return c.cmds
+}
+
+// BaseWriter returns the underlying connection writer, if any
+func BaseWriter(c Conn) *Writer {
+	if c, ok := c.(*conn); ok {
+		return c.wr
+	}
+	return nil
 }
 
 // DetachedConn represents a connection that is detached from the server
@@ -364,7 +353,7 @@ func (dc *detachedConn) ReadCommand() (Command, error) {
 // Command represent a command
 type Command struct {
 	// Raw is a encoded RESP message.
-	Raw  []byte
+	Raw []byte
 	// Args is a series of arguments that make up the command.
 	Args [][]byte
 }
@@ -430,6 +419,18 @@ func (w *Writer) WriteBulkString(bulk string) {
 	w.b = append(w.b, '\r', '\n')
 }
 
+// Buffer returns the unflushed buffer. This is a copy so changes
+// to the resulting []byte will not affect the writer.
+func (w *Writer) Buffer() []byte {
+	return append([]byte(nil), w.b...)
+}
+
+// SetBuffer replaces the unflushed buffer with new bytes.
+func (w *Writer) SetBuffer(raw []byte) {
+	w.b = w.b[:0]
+	w.b = append(w.b, raw...)
+}
+
 // Flush writes all unflushed Write* calls to the underlying writer.
 func (w *Writer) Flush() error {
 	if _, err := w.w.Write(w.b); err != nil {
@@ -459,8 +460,13 @@ func (w *Writer) WriteString(msg string) {
 
 // WriteInt writes an integer to the client.
 func (w *Writer) WriteInt(num int) {
+	w.WriteInt64(int64(num))
+}
+
+// WriteInt64 writes a 64-bit signed integer to the client.
+func (w *Writer) WriteInt64(num int64) {
 	w.b = append(w.b, ':')
-	w.b = append(w.b, []byte(strconv.FormatInt(int64(num), 10))...)
+	w.b = append(w.b, []byte(strconv.FormatInt(num, 10))...)
 	w.b = append(w.b, '\r', '\n')
 }
 
@@ -495,7 +501,7 @@ func parseInt(b []byte) (int, error) {
 		}
 	case 2:
 		if b[0] >= '0' && b[0] <= '9' && b[1] >= '0' && b[1] <= '9' {
-			return int(b[0] - '0') * 10 + int(b[1] - '0'), nil
+			return int(b[0]-'0')*10 + int(b[1]-'0'), nil
 		}
 	}
 	// fallback to standard library
@@ -506,25 +512,26 @@ func parseInt(b []byte) (int, error) {
 func (rd *Reader) readCommands(leftover *int) ([]Command, error) {
 	var cmds []Command
 	b := rd.buf[rd.start:rd.end]
+
 	if len(b) > 0 {
 		// we have data, yay!
 		// but is this enough data for a complete command? or multiple?
-		next:
+	next:
 		switch b[0] {
 		default:
 			// just a plain text command
 			for i := 0; i < len(b); i++ {
 				if b[i] == '\n' {
 					var line []byte
-					if i > 0 && b[i - 1] == '\r' {
-						line = b[:i - 1]
+					if i > 0 && b[i-1] == '\r' {
+						line = b[:i-1]
 					} else {
 						line = b[:i]
 					}
 					var cmd Command
 					var quote bool
 					var escape bool
-					outer:
+				outer:
 					for {
 						nline := make([]byte, 0, len(line))
 						for i := 0; i < len(line); i++ {
@@ -534,7 +541,7 @@ func (rd *Reader) readCommands(leftover *int) ([]Command, error) {
 									if len(nline) > 0 {
 										cmd.Args = append(cmd.Args, nline)
 									}
-									line = line[i + 1:]
+									line = line[i+1:]
 									continue outer
 								}
 								if c == '"' {
@@ -542,7 +549,7 @@ func (rd *Reader) readCommands(leftover *int) ([]Command, error) {
 										return nil, errUnbalancedQuotes
 									}
 									quote = true
-									line = line[i + 1:]
+									line = line[i+1:]
 									continue outer
 								}
 							} else {
@@ -559,7 +566,7 @@ func (rd *Reader) readCommands(leftover *int) ([]Command, error) {
 								} else if c == '"' {
 									quote = false
 									cmd.Args = append(cmd.Args, nline)
-									line = line[i + 1:]
+									line = line[i+1:]
 									if len(line) > 0 && line[0] != ' ' {
 										return nil, errUnbalancedQuotes
 									}
@@ -590,7 +597,7 @@ func (rd *Reader) readCommands(leftover *int) ([]Command, error) {
 						cmd.Raw = wr.b
 						cmds = append(cmds, cmd)
 					}
-					b = b[i + 1:]
+					b = b[i+1:]
 					if len(b) > 0 {
 						goto next
 					} else {
@@ -601,13 +608,13 @@ func (rd *Reader) readCommands(leftover *int) ([]Command, error) {
 		case '*':
 			// resp formatted command
 			marks := make([]int, 0, 16)
-			outer2:
+		outer2:
 			for i := 1; i < len(b); i++ {
 				if b[i] == '\n' {
-					if b[i - 1] != '\r' {
+					if b[i-1] != '\r' {
 						return nil, errInvalidMultiBulkLength
 					}
-					count, err := parseInt(b[1 : i - 1])
+					count, err := parseInt(b[1 : i-1])
 					if err != nil || count <= 0 {
 						return nil, errInvalidMultiBulkLength
 					}
@@ -623,47 +630,47 @@ func (rd *Reader) readCommands(leftover *int) ([]Command, error) {
 							si := i
 							for ; i < len(b); i++ {
 								if b[i] == '\n' {
-									if b[i - 1] != '\r' {
+									if b[i-1] != '\r' {
 										return nil, errInvalidBulkLength
 									}
-									size, err := parseInt(b[si + 1 : i - 1])
+									size, err := parseInt(b[si+1 : i-1])
 									if err != nil || size < 0 {
 										return nil, errInvalidBulkLength
 									}
-									if i + size + 2 >= len(b) {
+									if i+size+2 >= len(b) {
 										// not ready
 										break outer2
 									}
-									if b[i + size + 2] != '\n' ||
-										b[i + size + 1] != '\r' {
+									if b[i+size+2] != '\n' ||
+										b[i+size+1] != '\r' {
 										return nil, errInvalidBulkLength
 									}
 									i++
-									marks = append(marks, i, i + size)
+									marks = append(marks, i, i+size)
 									i += size + 1
 									break
 								}
 							}
 						}
 					}
-					if len(marks) == count * 2 {
+					if len(marks) == count*2 {
 						var cmd Command
 						if rd.rd != nil {
 							// make a raw copy of the entire command when
 							// there's a underlying reader.
-							cmd.Raw = append([]byte(nil), b[:i + 1]...)
+							cmd.Raw = append([]byte(nil), b[:i+1]...)
 						} else {
 							// just assign the slice
-							cmd.Raw = b[:i + 1]
+							cmd.Raw = b[:i+1]
 						}
-						cmd.Args = make([][]byte, len(marks) / 2)
+						cmd.Args = make([][]byte, len(marks)/2)
 						// slice up the raw command into the args based on
 						// the recorded marks.
 						for h := 0; h < len(marks); h += 2 {
-							cmd.Args[h / 2] = cmd.Raw[marks[h]:marks[h + 1]]
+							cmd.Args[h/2] = cmd.Raw[marks[h]:marks[h+1]]
 						}
 						cmds = append(cmds, cmd)
-						b = b[i + 1:]
+						b = b[i+1:]
 						if len(b) > 0 {
 							goto next
 						} else {
@@ -673,7 +680,7 @@ func (rd *Reader) readCommands(leftover *int) ([]Command, error) {
 				}
 			}
 		}
-		done:
+	done:
 		rd.start = rd.end - len(b)
 	}
 	if leftover != nil {
@@ -692,7 +699,7 @@ func (rd *Reader) readCommands(leftover *int) ([]Command, error) {
 			rd.start, rd.end = 0, 0
 		} else {
 			// must grow the buffer
-			newbuf := make([]byte, len(rd.buf) * 2)
+			newbuf := make([]byte, len(rd.buf)*2)
 			copy(newbuf, rd.buf)
 			rd.buf = newbuf
 		}
@@ -703,10 +710,6 @@ func (rd *Reader) readCommands(leftover *int) ([]Command, error) {
 	}
 	rd.end += n
 	return rd.readCommands(leftover)
-}
-
-func (rd *Reader) ReadCommands() ([]Command, error) {
-	return rd.readCommands(nil)
 }
 
 // ReadCommand reads the next command.

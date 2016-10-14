@@ -75,6 +75,14 @@ func main() {
 				CmdHelp(conn, db, cmd)
 			case "ping":
 				conn.WriteString("PONG")
+			case "select":
+				if string(cmd.Args[1]) >= "1" {
+					conn.WriteError("ERR invalid DB index")
+				} else {
+					conn.WriteString("OK")
+				}
+			case "ttl":
+				conn.WriteInt(1000)
 			case "quit":
 				conn.WriteString("OK")
 				conn.Close()
@@ -140,7 +148,7 @@ func CmdHelp(conn redcon.Conn, db *buntdb.DB, cmd redcon.Command) {
 	info
 		eg: info
 	`
-	conn.WriteString(helpstr)
+	conn.WriteBulkString(helpstr)
 }
 func CmdGet(conn redcon.Conn, db *buntdb.DB, cmd redcon.Command) {
 	if len(cmd.Args) != 2 {
