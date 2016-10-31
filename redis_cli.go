@@ -64,6 +64,7 @@ func main() {
 
 	for {
 		command, err := line.Prompt("zb" + "> ")
+		line.AppendHistory(command)
 		var cs = strings.Split(command, " ")
 		var ncs = make([]interface{}, 0, len(cs))
 		for _, v := range cs {
@@ -81,11 +82,11 @@ func main() {
 			fmt.Fprintln(os.Stdout, "prompt aborte")
 			continue
 		}
-		if command == "exit" {
+		if command == "exit" || command == "bye" {
 			return
 		}
 
-		if convert.ToString(ncs[0]) == "connect" && len(ncs) == 3 {
+		if convert.ToString(ncs[0]) == "connect" && len(ncs) >= 3 {
 			cconn, err := client.Dial("tcp", fmt.Sprintf("%s:%s", ncs[1], ncs[2]))
 			if err != nil {
 				fmt.Fprintln(os.Stdout, "[error] " + err.Error())
@@ -97,6 +98,9 @@ func main() {
 			}
 			fmt.Fprintf(os.Stdout, "[%s:%s]连接成功\n", ncs[1], ncs[2])
 			rconn = redis.NewConn(cconn, time.Second * 30, time.Second * 30)
+			if len(ncs) == 4 {
+				rconn.Do("AUTH", ncs[3])
+			}
 			defer rconn.Close()
 			continue
 		}
@@ -134,8 +138,8 @@ func main() {
 			continue
 		}
 		if v, err := redis.Strings(resp, err); err == nil {
-			for _, vv := range v {
-				fmt.Fprintln(os.Stdout, vv)
+			for k, vv := range v {
+				fmt.Fprintln(os.Stdout, fmt.Sprintf("[%d]", k), vv)
 			}
 			continue
 		}
